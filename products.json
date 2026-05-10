@@ -1,5 +1,32 @@
 [
   {
+    "name": "A",
+    "product_type": "Аналоговая камера",
+    "characteristics": {
+      "Разрешение (TVL)": {
+        "value": 700.0,
+        "weight": 1.5
+      },
+      "Частота кадров (fps)": {
+        "value": 25.0,
+        "weight": 1.0
+      },
+      "Чувствительность (lux)": {
+        "value": 0.1,
+        "weight": 1.2
+      },
+      "Угол обзора (град)": {
+        "value": 90.0,
+        "weight": 0.8
+      },
+      "Качество сигнала (коэфф)": {
+        "value": 0.9,
+        "weight": 1.0
+      }
+    },
+    "technical_level": 1.0
+  },
+  {
     "name": "I",
     "product_type": "IP-камера",
     "characteristics": {
@@ -25,6 +52,37 @@
       },
       "Сеть (Mbps)": {
         "value": 100.0,
+        "weight": 0.5
+      }
+    },
+    "technical_level": 1.0
+  },
+  {
+    "name": "V",
+    "product_type": "Видеорегистратор",
+    "characteristics": {
+      "Количество каналов": {
+        "value": 16.0,
+        "weight": 1.5
+      },
+      "Разрешение записи (MP)": {
+        "value": 4.0,
+        "weight": 1.2
+      },
+      "Частота кадров (fps)": {
+        "value": 30.0,
+        "weight": 1.0
+      },
+      "Объем памяти (TB)": {
+        "value": 4.0,
+        "weight": 1.3
+      },
+      "Сжатие видео (коэффициент)": {
+        "value": 0.5,
+        "weight": 1.0
+      },
+      "Сеть (Mbps)": {
+        "value": 1000.0,
         "weight": 0.5
       }
     },

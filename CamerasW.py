@@ -3,6 +3,10 @@ import json
 import csv
 import os
 from datetime import datetime
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.metrics import r2_score, mean_squared_error
 
 try:
     import matplotlib.pyplot as plt
@@ -469,6 +473,318 @@ def show_all_samples(samples):
     
     print("="*70)
 
+class ForecastModule:
+    def __init__(self):
+        self.data = []
+        self.features = []
+        self.target = ''
+        self.model = None
+        self.model_type = ''
+        self.feature_names = []
+        
+    def load_data_from_samples(self, samples):
+        if not samples:
+            print("Нет данных для анализа")
+            return False
+            
+        self.data = []
+        self.feature_names = list(samples[0].characteristics.keys())
+        
+        for sample in samples:
+            row = {}
+            for char_name, char_data in sample.characteristics.items():
+                row[char_name] = char_data['value']
+            row['technical_level'] = sample.technical_level
+            self.data.append(row)
+            
+        print(f"✓ Загружено {len(self.data)} записей с {len(self.feature_names)} характеристиками")
+        return True
+    
+    def analyze_data(self):
+        if not HAS_MATPLOTLIB or not self.data:
+            print("Нет данных для анализа")
+            return
+            
+        print("\n" + "="*60)
+        print("АНАЛИЗ ИСХОДНЫХ ДАННЫХ")
+        print("="*60)
+        
+        print("\nСтатистика по характеристикам:")
+        for feat in self.feature_names:
+            values = [row[feat] for row in self.data if feat in row]
+            if values:
+                print(f"\n{feat}:")
+                print(f"  Мин: {min(values):.3f}, Макс: {max(values):.3f}, Среднее: {np.mean(values):.3f}")
+            else:
+                print(f"\n{feat}: Нет данных")
+        
+        print("\n" + "-"*60)
+        print("Корреляция характеристик с техническим уровнем:")
+        
+        correlations = {}
+        for feat in self.feature_names:
+            x_list = []
+            y_list = []
+            for row in self.data:
+                if feat in row:
+                    x_list.append(row[feat])
+                    y_list.append(row['technical_level'])
+            
+            x = np.array(x_list)
+            y = np.array(y_list)
+            
+            if len(x) > 1 and np.std(x) > 0:
+                corr = np.corrcoef(x, y)[0, 1]
+                correlations[feat] = corr
+                strength = "сильная" if abs(corr) > 0.7 else "средняя" if abs(corr) > 0.4 else "слабая"
+                print(f"  {feat}: {corr:.3f} ({strength})")
+        
+        if HAS_MATPLOTLIB:
+            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+            axes = axes.flatten()
+            
+            sorted_corr = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)
+            
+            for i, (feat, corr) in enumerate(sorted_corr[:4]):
+                x_list = []
+                y_list = []
+                for row in self.data:
+                    if feat in row:
+                        x_list.append(row[feat])
+                        y_list.append(row['technical_level'])
+                
+                x = np.array(x_list)
+                y = np.array(y_list)
+                
+                axes[i].scatter(x, y, alpha=0.6, color='blue')
+                axes[i].set_xlabel(feat, fontsize=9)
+                axes[i].set_ylabel('Технический уровень', fontsize=9)
+                axes[i].set_title(f'{feat}\nКорреляция: {corr:.3f}', fontsize=10)
+                axes[i].grid(True, alpha=0.3)
+                
+                if len(x) > 1:
+                    z = np.polyfit(x, y, 1)
+                    p = np.poly1d(z)
+                    axes[i].plot(x, p(x), "r--", alpha=0.5, linewidth=1)
+            
+            plt.tight_layout()
+            plt.savefig('correlation_analysis.png', dpi=300, bbox_inches='tight')
+            print("\n✓ Графики корреляций сохранены в correlation_analysis.png")
+            plt.show()
+        
+        return correlations
+    
+    def choose_model(self):
+        if not self.data:
+            print("Нет данных для обучения модели")
+            return
+            
+        print("\n" + "="*60)
+        print("ВЫБОР МОДЕЛИ РЕГРЕССИИ")
+        print("="*60)
+        
+        correlations = {}
+        for feat in self.feature_names:
+            x_list = []
+            y_list = []
+            for row in self.data:
+                if feat in row:
+                    x_list.append(row[feat])
+                    y_list.append(row['technical_level'])
+            
+            x = np.array(x_list)
+            y = np.array(y_list)
+            
+            if len(x) > 1 and np.std(x) > 0:
+                correlations[feat] = abs(np.corrcoef(x, y)[0, 1])
+        
+        if not correlations:
+            print("Недостаточно данных для выбора модели")
+            return
+            
+        best_feature = max(correlations.items(), key=lambda x: x[1])[0]
+        print(f"\nНаиболее коррелирующий признак: {best_feature}")
+        
+        X_list = []
+        y_list = []
+        for row in self.data:
+            if best_feature in row:
+                X_list.append(row[best_feature])
+                y_list.append(row['technical_level'])
+                
+        X = np.array(X_list).reshape(-1, 1)
+        y = np.array(y_list)
+        
+        lin_reg = LinearRegression()
+        lin_reg.fit(X, y)
+        y_pred_lin = lin_reg.predict(X)
+        r2_lin = r2_score(y, y_pred_lin)
+        mse_lin = mean_squared_error(y, y_pred_lin)
+        
+        print(f"\nЛинейная регрессия:")
+        print(f"  R² = {r2_lin:.4f}")
+        print(f"  MSE = {mse_lin:.4f}")
+        print(f"  Уравнение: ТУ = {lin_reg.coef_[0]:.4f} * {best_feature} + {lin_reg.intercept_:.4f}")
+        
+        poly = PolynomialFeatures(degree=2)
+        X_poly = poly.fit_transform(X)
+        poly_reg = LinearRegression()
+        poly_reg.fit(X_poly, y)
+        y_pred_poly = poly_reg.predict(X_poly)
+        r2_poly = r2_score(y, y_pred_poly)
+        mse_poly = mean_squared_error(y, y_pred_poly)
+        
+        print(f"\nПолиномиальная регрессия (степень 2):")
+        print(f"  R² = {r2_poly:.4f}")
+        print(f"  MSE = {mse_poly:.4f}")
+        
+        if r2_poly > r2_lin and (r2_poly - r2_lin) > 0.05:
+            self.model = ('poly', poly_reg, poly, best_feature)
+            self.model_type = 'poly'
+            print(f"\n✓ Выбрана ПОЛИНОМИАЛЬНАЯ модель (лучшее качество)")
+        else:
+            self.model = ('linear', lin_reg, None, best_feature)
+            self.model_type = 'linear'
+            print(f"\n✓ Выбрана ЛИНЕЙНАЯ модель (достаточное качество, меньше переобучения)")
+        
+        if HAS_MATPLOTLIB:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.scatter(X, y, color='blue', alpha=0.6, label='Данные')
+            
+            X_test = np.linspace(X.min(), X.max(), 100).reshape(-1, 1)
+            
+            if self.model_type == 'linear':
+                y_test = self.model[1].predict(X_test)
+                ax.plot(X_test, y_test, 'r-', linewidth=2, label=f'Линейная (R²={r2_lin:.3f})')
+            else:
+                X_test_poly = self.model[2].transform(X_test)
+                y_test = self.model[1].predict(X_test_poly)
+                ax.plot(X_test, y_test, 'g-', linewidth=2, label=f'Полиномиальная (R²={r2_poly:.3f})')
+            
+            ax.set_xlabel(best_feature)
+            ax.set_ylabel('Технический уровень')
+            ax.set_title(f'Модель прогноза технического уровня\nна основе признака: {best_feature}')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            
+            plt.savefig('regression_model.png', dpi=300, bbox_inches='tight')
+            print("✓ График модели сохранен в regression_model.png")
+            plt.show()
+    
+    def predict_single(self):
+        if not self.model:
+            print("Сначала выберите модель (пункт 2)")
+            return
+            
+        print("\n" + "="*60)
+        print("ПРОГНОЗ ТЕХНИЧЕСКОГО УРОВНЯ")
+        print("="*60)
+        
+        feature_name = self.model[3]
+        print(f"\nВведите значение признака '{feature_name}':")
+        
+        try:
+            value = float(input("> "))
+        except ValueError:
+            print("Ошибка: введите числовое значение")
+            return
+        
+        if self.model_type == 'linear':
+            prediction = self.model[1].predict(np.array([[value]]))[0]
+        else:
+            X_poly = self.model[2].transform(np.array([[value]]))
+            prediction = self.model[1].predict(X_poly)[0]
+        
+        print(f"\n✓ Прогнозируемый технический уровень: {prediction:.4f}")
+        
+        if prediction > 1.0:
+            print("  Оценка: ВЫШЕ базового уровня ✓")
+        elif prediction >= 0.9:
+            print("  Оценка: СООТВЕТСТВУЕТ базовому уровню")
+        else:
+            print("  Оценка: НИЖЕ базового уровня ")
+    
+    def predict_interval(self):
+        if not self.model:
+            print("Сначала выберите модель (пункт 2)")
+            return
+            
+        print("\n" + "="*60)
+        print("ПРОГНОЗ НА ИНТЕРВАЛЕ ЗНАЧЕНИЙ")
+        print("="*60)
+        
+        feature_name = self.model[3]
+        print(f"\nПризнак: {feature_name}")
+        print("Введите диапазон значений:")
+        
+        try:
+            start = float(input("  Начальное значение: "))
+            end = float(input("  Конечное значение: "))
+            steps = int(input("  Количество точек: "))
+        except ValueError:
+            print("Ошибка: введите числовые значения")
+            return
+        
+        X_interval = np.linspace(start, end, steps).reshape(-1, 1)
+        
+        if self.model_type == 'linear':
+            y_interval = self.model[1].predict(X_interval)
+        else:
+            X_poly = self.model[2].transform(X_interval)
+            y_interval = self.model[1].predict(X_poly)
+        
+        print("\n" + "-"*60)
+        print(f"{'Значение':<20} {'Прогноз ТУ':<20}")
+        print("-"*60)
+        for x, y in zip(X_interval.flatten(), y_interval):
+            print(f"{x:<20.3f} {y:<20.4f}")
+        print("-"*60)
+        
+        if HAS_MATPLOTLIB:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(X_interval.flatten(), y_interval, 'b-', linewidth=2, marker='o', markersize=4)
+            ax.set_xlabel(feature_name, fontsize=11)
+            ax.set_ylabel('Прогнозируемый технический уровень', fontsize=11)
+            ax.set_title(f'Зависимость технического уровня\nот {feature_name}', fontsize=12, pad=15)
+            ax.grid(True, alpha=0.3)
+            ax.axhline(y=1.0, color='r', linestyle='--', alpha=0.5, label='Базовый уровень (ТУ=1.0)')
+            ax.legend()
+            
+            plt.savefig('forecast_interval.png', dpi=300, bbox_inches='tight')
+            print("\n✓ График прогноза сохранен в forecast_interval.png")
+            plt.show()
+def forecast_menu(samples, calculator):
+    forecast = ForecastModule()
+    
+    print("\n" + "="*60)
+    print("МОДУЛЬ ПРОГНОЗИРОВАНИЯ ДИНАМИКИ ПОКАЗАТЕЛЕЙ")
+    print("="*60)
+    
+    while True:
+        print("\nМЕНЮ ПРОГНОЗИРОВАНИЯ:")
+        print("1. Загрузить данные и провести анализ")
+        print("2. Выбрать модель регрессии")
+        print("3. Прогноз для конкретных значений")
+        print("4. Прогноз на интервале значений")
+        print("0. Вернуться в главное меню")
+        
+        choice = input("\nВыберите пункт (0-4): ").strip()
+        
+        if choice == '1':
+            if forecast.load_data_from_samples(samples):
+                forecast.analyze_data()
+        elif choice == '2':
+            if forecast.load_data_from_samples(samples):
+                forecast.choose_model()
+        elif choice == '3':
+            forecast.predict_single()
+        elif choice == '4':
+            forecast.predict_interval()
+        elif choice == '0':
+            break
+        else:
+            print("Неверный выбор")
+
 def main_menu():
     print("\n" + "="*70)
     print("ПРОГРАММА ОЦЕНКИ ТЕХНИЧЕСКОГО УРОВНЯ ПРОДУКЦИИ")
@@ -490,10 +806,11 @@ def main_menu():
         print("5. Показать радиальную диаграмму")
         print("6. Показать столбчатую диаграмму")
         print("7. Сохранить данные")
+        print("8. Прогнозирование динамики показателей")
         print("0. Выход")
         print("-"*70)
         
-        choice = input("Выберите пункт меню (0-7): ").strip()
+        choice = input("Выберите пункт меню (0-8): ").strip()
         
         if choice == '1':
             samples = add_sample(samples, calculator)
@@ -526,6 +843,8 @@ def main_menu():
                 data_manager.save_to_csv(samples)
             else:
                 print("Нет данных для сохранения")
+        elif choice == '8':
+            forecast_menu(samples, calculator)
         elif choice == '0':
             print("\nСпасибо за работу!")
             break
