@@ -2,11 +2,14 @@
 import json
 import csv
 import os
+import pandas as pd
 from datetime import datetime
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.metrics import r2_score, mean_squared_error
+from scipy.optimize import linprog
+import time
 
 try:
     import matplotlib.pyplot as plt
@@ -263,7 +266,7 @@ class Visualizer:
 
         safe_name = selected_type.replace(' ', '_').replace('/', '_')
         plt.savefig(f'radial_{safe_name}.png', dpi=300, bbox_inches='tight')
-        print(f"✓ Диаграмма сохранена: radial_{safe_name}.png")
+        print(f" Диаграмма сохранена: radial_{safe_name}.png")
         plt.show()
     
     @staticmethod
@@ -306,7 +309,7 @@ class Visualizer:
         legend_elements = [plt.Line2D([0], [0], marker='s', color='w', 
                                       markerfacecolor=color, markersize=10, label=ptype)
                           for ptype, color in type_colors.items()]
-        ax.legend(handles=legend_elements, loc='lower right')
+        ax.legend(handles=legend_elements, loc='upper right')
         
         plt.tight_layout()
         plt.savefig('technical_level_bar.png', dpi=300, bbox_inches='tight')
@@ -319,11 +322,14 @@ def get_product_type():
     print("1. IP-камера")
     print("2. Аналоговая камера")
     print("3. Видеорегистратор")
+    print("0. Вернуться в главное меню")
     print("="*50)
     
     while True:
-        choice = input("Введите номер (1-3): ").strip()
-        if choice == '1':
+        choice = input("Введите номер (0-3): ").strip()
+        if choice == '0':
+            return None
+        elif choice == '1':
             return 'IP-камера'
         elif choice == '2':
             return 'Аналоговая камера'
@@ -337,6 +343,7 @@ def get_characteristics(product_type):
     
     print(f"\nВведите характеристики для '{product_type}':")
     print("(нажмите Enter для использования значения по умолчанию)")
+    print("(введите '0' для возврата в главное меню)")
     
     if product_type == 'IP-камера':
         chars = {
@@ -367,15 +374,17 @@ def get_characteristics(product_type):
     
     for char_name, default_value in chars.items():
         while True:
-            value = input(f"  {char_name} [{default_value}]: ").strip()
-            if value == '':
-                value = default_value
             try:
+                value = input(f"  {char_name} [{default_value}]: ").strip()
+                if value == '0':
+                    return None
+                if value == '':
+                    value = default_value
                 value = float(value)
                 characteristics[char_name] = value
                 break
             except ValueError:
-                print("  Ошибка! Введите числовое значение.")
+                print("  Ошибка! Введите числовое значение или '0' для выхода.")
     
     return characteristics
 
@@ -389,10 +398,16 @@ def add_sample(samples, calculator):
         name = f"Образец_{len(samples) + 1}"
     
     product_type = get_product_type()
+    if product_type is None:
+        print("Возврат в главное меню...")
+        return samples
     
     sample = ProductSample(name, product_type)
     
     characteristics = get_characteristics(product_type)
+    if characteristics is None:
+        print("Возврат в главное меню...")
+        return samples
     
     weights = calculator.weights.get(product_type, {})
     for char_name, value in characteristics.items():
@@ -403,7 +418,7 @@ def add_sample(samples, calculator):
     
     samples.append(sample)
     
-    print(f"\n✓ Образец '{name}' добавлен!")
+    print(f"\n Образец '{name}' добавлен!")
     print(f"  Технический уровень: {sample.technical_level:.3f}")
     
     return samples
@@ -414,10 +429,13 @@ def load_sample_from_file(samples, calculator):
     print("="*50)
     print("1. Загрузить из JSON")
     print("2. Загрузить из CSV")
+    print("0. Вернуться в главное меню")
     
-    choice = input("Выберите формат (1-2): ").strip()
+    choice = input("Выберите формат (0-2): ").strip()
     
-    if choice == '1':
+    if choice == '0':
+        return samples
+    elif choice == '1':
         filename = input("Введите имя файла JSON [products.json]: ").strip()
         if not filename:
             filename = 'products.json'
@@ -475,311 +493,388 @@ def show_all_samples(samples):
 
 class ForecastModule:
     def __init__(self):
-        self.data = []
-        self.features = []
-        self.target = ''
+        self.df = None
+        self.X = None
+        self.y = None
         self.model = None
         self.model_type = ''
-        self.feature_names = []
+        self.best_feature = ''
+        self.selected_feature = None
         
-    def load_data_from_samples(self, samples):
-        if not samples:
-            print("Нет данных для анализа")
+    def load_cctv_data(self, filename='cctv.csv'):
+        try:
+            self.df = pd.read_csv(filename)
+            features = ['avg_system_price', 'camera_resolution', 'is_ai_analytics', 'storage_capacity', 'night_vision_range']
+            target = 'monthly_cctv_sales'
+            
+            self.X = self.df[features]
+            self.y = self.df[target]
+            
+            print(f"\nДанные успешно загружены из {filename}")
+            print(f"  Найдено {len(self.df)} записей.")
+            print(f"  Целевой показатель: {target}")
+            return True
+        except Exception as e:
+            print(f"Ошибка загрузки файла: {e}")
             return False
-            
-        self.data = []
-        self.feature_names = list(samples[0].characteristics.keys())
-        
-        for sample in samples:
-            row = {}
-            for char_name, char_data in sample.characteristics.items():
-                row[char_name] = char_data['value']
-            row['technical_level'] = sample.technical_level
-            self.data.append(row)
-            
-        print(f"✓ Загружено {len(self.data)} записей с {len(self.feature_names)} характеристиками")
-        return True
-    
-    def analyze_data(self):
-        if not HAS_MATPLOTLIB or not self.data:
-            print("Нет данных для анализа")
-            return
-            
-        print("\n" + "="*60)
-        print("АНАЛИЗ ИСХОДНЫХ ДАННЫХ")
-        print("="*60)
-        
-        print("\nСтатистика по характеристикам:")
-        for feat in self.feature_names:
-            values = [row[feat] for row in self.data if feat in row]
-            if values:
-                print(f"\n{feat}:")
-                print(f"  Мин: {min(values):.3f}, Макс: {max(values):.3f}, Среднее: {np.mean(values):.3f}")
-            else:
-                print(f"\n{feat}: Нет данных")
-        
-        print("\n" + "-"*60)
-        print("Корреляция характеристик с техническим уровнем:")
-        
-        correlations = {}
-        for feat in self.feature_names:
-            x_list = []
-            y_list = []
-            for row in self.data:
-                if feat in row:
-                    x_list.append(row[feat])
-                    y_list.append(row['technical_level'])
-            
-            x = np.array(x_list)
-            y = np.array(y_list)
-            
-            if len(x) > 1 and np.std(x) > 0:
-                corr = np.corrcoef(x, y)[0, 1]
-                correlations[feat] = corr
-                strength = "сильная" if abs(corr) > 0.7 else "средняя" if abs(corr) > 0.4 else "слабая"
-                print(f"  {feat}: {corr:.3f} ({strength})")
-        
-        if HAS_MATPLOTLIB:
-            fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-            axes = axes.flatten()
-            
-            sorted_corr = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)
-            
-            for i, (feat, corr) in enumerate(sorted_corr[:4]):
-                x_list = []
-                y_list = []
-                for row in self.data:
-                    if feat in row:
-                        x_list.append(row[feat])
-                        y_list.append(row['technical_level'])
-                
-                x = np.array(x_list)
-                y = np.array(y_list)
-                
-                axes[i].scatter(x, y, alpha=0.6, color='blue')
-                axes[i].set_xlabel(feat, fontsize=9)
-                axes[i].set_ylabel('Технический уровень', fontsize=9)
-                axes[i].set_title(f'{feat}\nКорреляция: {corr:.3f}', fontsize=10)
-                axes[i].grid(True, alpha=0.3)
-                
-                if len(x) > 1:
-                    z = np.polyfit(x, y, 1)
-                    p = np.poly1d(z)
-                    axes[i].plot(x, p(x), "r--", alpha=0.5, linewidth=1)
-            
-            plt.tight_layout()
-            plt.savefig('correlation_analysis.png', dpi=300, bbox_inches='tight')
-            print("\n✓ Графики корреляций сохранены в correlation_analysis.png")
-            plt.show()
-        
-        return correlations
-    
+
     def choose_model(self):
-        if not self.data:
-            print("Нет данных для обучения модели")
+        if self.X is None or self.y is None:
+            print("Нет данных для обучения. Сначала загрузите CSV.")
             return
             
         print("\n" + "="*60)
-        print("ВЫБОР МОДЕЛИ РЕГРЕССИИ")
+        print("ВЫБОР ТИПА МОДЕЛИ")
         print("="*60)
-        
-        correlations = {}
-        for feat in self.feature_names:
-            x_list = []
-            y_list = []
-            for row in self.data:
-                if feat in row:
-                    x_list.append(row[feat])
-                    y_list.append(row['technical_level'])
-            
-            x = np.array(x_list)
-            y = np.array(y_list)
-            
-            if len(x) > 1 and np.std(x) > 0:
-                correlations[feat] = abs(np.corrcoef(x, y)[0, 1])
-        
-        if not correlations:
-            print("Недостаточно данных для выбора модели")
+        print("1. Линейная регрессия")
+        print("2. Полиномиальная регрессия (степень 2)")
+
+        model_choice = input("Выберите тип модели (1-2): ").strip()
+
+        if model_choice not in ['1', '2']:
+            print("Неверный выбор")
             return
             
-        best_feature = max(correlations.items(), key=lambda x: x[1])[0]
-        print(f"\nНаиболее коррелирующий признак: {best_feature}")
-        
-        X_list = []
-        y_list = []
-        for row in self.data:
-            if best_feature in row:
-                X_list.append(row[best_feature])
-                y_list.append(row['technical_level'])
-                
-        X = np.array(X_list).reshape(-1, 1)
-        y = np.array(y_list)
-        
+        print("\n" + "="*60)
+        print("ВЫБОР ПРИЗНАКА ДЛЯ ПРОГНОЗА")
+        print("="*60)
+
+        features_list = list(self.X.columns)
+        for i, col in enumerate(features_list, 1):
+            corr = abs(self.X[col].corr(self.y))
+            print(f"{i}. {col} (корреляция: {corr:.3f})")
+
+        while True:
+            try:
+                feat_choice = int(input(f"\nВыберите признак (1-{len(features_list)}): "))
+                if 1 <= feat_choice <= len(features_list):
+                    self.best_feature = features_list[feat_choice - 1]
+                    break
+                print("Неверный номер. Попробуйте снова.")
+            except ValueError:
+                print("Ошибка: введите число.")
+
+        print(f"\n Выбран признак: {self.best_feature}")
+
+        X_single = self.X[[self.best_feature]].values
+        y = self.y.values
+
         lin_reg = LinearRegression()
-        lin_reg.fit(X, y)
-        y_pred_lin = lin_reg.predict(X)
+        lin_reg.fit(X_single, y)
+        y_pred_lin = lin_reg.predict(X_single)
         r2_lin = r2_score(y, y_pred_lin)
-        mse_lin = mean_squared_error(y, y_pred_lin)
-        
-        print(f"\nЛинейная регрессия:")
-        print(f"  R² = {r2_lin:.4f}")
-        print(f"  MSE = {mse_lin:.4f}")
-        print(f"  Уравнение: ТУ = {lin_reg.coef_[0]:.4f} * {best_feature} + {lin_reg.intercept_:.4f}")
-        
+
         poly = PolynomialFeatures(degree=2)
-        X_poly = poly.fit_transform(X)
+        X_poly = poly.fit_transform(X_single)
         poly_reg = LinearRegression()
         poly_reg.fit(X_poly, y)
         y_pred_poly = poly_reg.predict(X_poly)
         r2_poly = r2_score(y, y_pred_poly)
-        mse_poly = mean_squared_error(y, y_pred_poly)
-        
-        print(f"\nПолиномиальная регрессия (степень 2):")
-        print(f"  R² = {r2_poly:.4f}")
-        print(f"  MSE = {mse_poly:.4f}")
-        
-        if r2_poly > r2_lin and (r2_poly - r2_lin) > 0.05:
-            self.model = ('poly', poly_reg, poly, best_feature)
+
+        print(f"\nЛинейная регрессия: R² = {r2_lin:.4f}")
+        print(f"Полиномиальная (ст. 2): R² = {r2_poly:.4f}")
+
+        if model_choice == '2':
+            self.model = ('poly', poly_reg, poly)
             self.model_type = 'poly'
-            print(f"\n✓ Выбрана ПОЛИНОМИАЛЬНАЯ модель (лучшее качество)")
+            print("Выбрана ПОЛИНОМИАЛЬНАЯ модель (по выбору пользователя)")
         else:
-            self.model = ('linear', lin_reg, None, best_feature)
+            self.model = ('linear', lin_reg, None)
             self.model_type = 'linear'
-            print(f"\n✓ Выбрана ЛИНЕЙНАЯ модель (достаточное качество, меньше переобучения)")
-        
+            print("Выбрана ЛИНЕЙНАЯ модель (по выбору пользователя)")
+            
         if HAS_MATPLOTLIB:
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.scatter(X, y, color='blue', alpha=0.6, label='Данные')
+            ax.scatter(X_single, y, color='blue', alpha=0.6, label='Реальные данные')
             
-            X_test = np.linspace(X.min(), X.max(), 100).reshape(-1, 1)
-            
+            X_test = np.linspace(X_single.min(), X_single.max(), 100).reshape(-1, 1)
             if self.model_type == 'linear':
                 y_test = self.model[1].predict(X_test)
-                ax.plot(X_test, y_test, 'r-', linewidth=2, label=f'Линейная (R²={r2_lin:.3f})')
+                label = f'Линейная (R²={r2_lin:.3f})'
             else:
-                X_test_poly = self.model[2].transform(X_test)
-                y_test = self.model[1].predict(X_test_poly)
-                ax.plot(X_test, y_test, 'g-', linewidth=2, label=f'Полиномиальная (R²={r2_poly:.3f})')
-            
-            ax.set_xlabel(best_feature)
-            ax.set_ylabel('Технический уровень')
-            ax.set_title(f'Модель прогноза технического уровня\nна основе признака: {best_feature}')
+                y_test = self.model[1].predict(self.model[2].transform(X_test))
+                label = f'Полиномиальная (R²={r2_poly:.3f})'
+                
+            ax.plot(X_test, y_test, 'r-', linewidth=2, label=label)
+            ax.set_xlabel(self.best_feature)
+            ax.set_ylabel('Объем продаж (monthly_cctv_sales)')
+            ax.set_title(f'Прогноз продаж на основе признака: {self.best_feature}')
             ax.legend()
             ax.grid(True, alpha=0.3)
-            
-            plt.savefig('regression_model.png', dpi=300, bbox_inches='tight')
-            print("✓ График модели сохранен в regression_model.png")
+            plt.savefig('sales_forecast.png', dpi=300, bbox_inches='tight')
+            print("График сохранен в sales_forecast.png")
             plt.show()
-    
+        
+        return True
+
     def predict_single(self):
-        if not self.model:
-            print("Сначала выберите модель (пункт 2)")
+        if self.model is None:
+            print("Сначала выберите модель регрессии (пункт 1)")
             return
-            
+        if not self.best_feature:
+            print("Сначала выберите признак")
+            return
+
         print("\n" + "="*60)
-        print("ПРОГНОЗ ТЕХНИЧЕСКОГО УРОВНЯ")
+        print("ПРОГНОЗ ДЛЯ КОНКРЕТНОГО ЗНАЧЕНИЯ")
         print("="*60)
-        
-        feature_name = self.model[3]
-        print(f"\nВведите значение признака '{feature_name}':")
-        
+
+        print(f"\n Текущий признак для прогноза: {self.best_feature}")
+
+        print("\n Допустимые диапазоны значений признаков:")
+        for col in self.X.columns:
+            min_v = self.X[col].min()
+            max_v = self.X[col].max()
+            print(f"   • {col}: от {min_v:.2f} до {max_v:.2f}")
+
+        print(f"\nВведите значение для '{self.best_feature}':")
         try:
             value = float(input("> "))
         except ValueError:
-            print("Ошибка: введите числовое значение")
+            print("Ошибка: введите корректное числовое значение.")
             return
-        
+
+        X_val = np.array([[value]])
         if self.model_type == 'linear':
-            prediction = self.model[1].predict(np.array([[value]]))[0]
+            prediction = self.model[1].predict(X_val)[0]
         else:
-            X_poly = self.model[2].transform(np.array([[value]]))
-            prediction = self.model[1].predict(X_poly)[0]
-        
-        print(f"\n✓ Прогнозируемый технический уровень: {prediction:.4f}")
-        
-        if prediction > 1.0:
-            print("  Оценка: ВЫШЕ базового уровня ✓")
-        elif prediction >= 0.9:
-            print("  Оценка: СООТВЕТСТВУЕТ базовому уровню")
-        else:
-            print("  Оценка: НИЖЕ базового уровня ")
-    
+            prediction = self.model[1].predict(self.model[2].transform(X_val))[0]
+
+        print(f"\n✓ Прогнозируемый объем продаж: {prediction:.2f} ед.")
+
     def predict_interval(self):
-        if not self.model:
-            print("Сначала выберите модель (пункт 2)")
+        if self.model is None:
+            print("Сначала выберите модель регрессии (пункт 1)")
             return
-            
+        if not self.best_feature:
+            print("Сначала выберите признак")
+            return
+
         print("\n" + "="*60)
         print("ПРОГНОЗ НА ИНТЕРВАЛЕ ЗНАЧЕНИЙ")
         print("="*60)
-        
-        feature_name = self.model[3]
-        print(f"\nПризнак: {feature_name}")
-        print("Введите диапазон значений:")
-        
+
+        print(f"\n Текущий признак для прогноза: {self.best_feature}")
+
+        print("\n Допустимые диапазоны значений признаков:")
+        for col in self.X.columns:
+            min_v = self.X[col].min()
+            max_v = self.X[col].max()
+            print(f"   • {col}: от {min_v:.2f} до {max_v:.2f}")
+
+        print(f"\nВведите границы интервала для '{self.best_feature}':")
         try:
             start = float(input("  Начальное значение: "))
             end = float(input("  Конечное значение: "))
             steps = int(input("  Количество точек: "))
         except ValueError:
-            print("Ошибка: введите числовые значения")
+            print("Ошибка: введите корректные числовые значения.")
             return
-        
+
         X_interval = np.linspace(start, end, steps).reshape(-1, 1)
-        
+
         if self.model_type == 'linear':
             y_interval = self.model[1].predict(X_interval)
         else:
-            X_poly = self.model[2].transform(X_interval)
-            y_interval = self.model[1].predict(X_poly)
-        
-        print("\n" + "-"*60)
-        print(f"{'Значение':<20} {'Прогноз ТУ':<20}")
-        print("-"*60)
+            y_interval = self.model[1].predict(self.model[2].transform(X_interval))
+
+        print("\n" + "-"*50)
+        print(f"{'Значение':<20} | {'Прогноз продаж':<15}")
+        print("-"*50)
         for x, y in zip(X_interval.flatten(), y_interval):
-            print(f"{x:<20.3f} {y:<20.4f}")
-        print("-"*60)
-        
+            print(f"{x:<20.2f} | {y:<15.2f}")
+        print("-"*50)
+
         if HAS_MATPLOTLIB:
             fig, ax = plt.subplots(figsize=(10, 6))
             ax.plot(X_interval.flatten(), y_interval, 'b-', linewidth=2, marker='o', markersize=4)
-            ax.set_xlabel(feature_name, fontsize=11)
-            ax.set_ylabel('Прогнозируемый технический уровень', fontsize=11)
-            ax.set_title(f'Зависимость технического уровня\nот {feature_name}', fontsize=12, pad=15)
+            ax.set_xlabel(self.best_feature, fontsize=11)
+            ax.set_ylabel('Прогноз объема продаж (monthly_cctv_sales)', fontsize=11)
+            ax.set_title(f'Интервальный прогноз продаж\n(признак: {self.best_feature})', fontsize=12, pad=15)
             ax.grid(True, alpha=0.3)
-            ax.axhline(y=1.0, color='r', linestyle='--', alpha=0.5, label='Базовый уровень (ТУ=1.0)')
-            ax.legend()
-            
-            plt.savefig('forecast_interval.png', dpi=300, bbox_inches='tight')
-            print("\n✓ График прогноза сохранен в forecast_interval.png")
+            plt.savefig('sales_interval.png', dpi=300, bbox_inches='tight')
+            print("\n График интервала сохранен в sales_interval.png")
             plt.show()
+    
+    
 def forecast_menu(samples, calculator):
     forecast = ForecastModule()
     
+    if not forecast.load_cctv_data('cctv.csv'):
+        return
+
     print("\n" + "="*60)
-    print("МОДУЛЬ ПРОГНОЗИРОВАНИЯ ДИНАМИКИ ПОКАЗАТЕЛЕЙ")
+    print("МОДУЛЬ ПРОГНОЗИРОВАНИЯ ОБЪЕМА ПРОДАЖ")
     print("="*60)
     
     while True:
         print("\nМЕНЮ ПРОГНОЗИРОВАНИЯ:")
-        print("1. Загрузить данные и провести анализ")
-        print("2. Выбрать модель регрессии")
-        print("3. Прогноз для конкретных значений")
-        print("4. Прогноз на интервале значений")
+        print("1. Выбрать модель и признак")
+        print("2. Прогноз для конкретного значения")
+        print("3. Прогноз на интервале значений")
         print("0. Вернуться в главное меню")
         
-        choice = input("\nВыберите пункт (0-4): ").strip()
+        choice = input("\nВыберите пункт (0-3): ").strip()
         
         if choice == '1':
-            if forecast.load_data_from_samples(samples):
-                forecast.analyze_data()
+            forecast.choose_model()
         elif choice == '2':
-            if forecast.load_data_from_samples(samples):
-                forecast.choose_model()
-        elif choice == '3':
             forecast.predict_single()
-        elif choice == '4':
+        elif choice == '3':
             forecast.predict_interval()
+        elif choice == '0':
+            break
+        else:
+            print("Неверный выбор")
+
+class OptimizationModule:
+    def __init__(self):
+        self.c = None
+        self.A_ub = None
+        self.b_ub = None
+        self.A_eq = None
+        self.b_eq = None
+        self.bounds = [(0, None) for _ in range(6)]
+        self.methods = ['highs', 'interior-point', 'revised simplex']
+    
+    def input_parameters(self):
+        print("\n" + "="*60)
+        print("ВВОД ПАРАМЕТРОВ ЗАДАЧИ ОПТИМИЗАЦИИ")
+        print("="*60)
+        
+        try:
+            print("\nМощности производственных линий:")
+            c1 = float(input("  Мощность линии C1 (ед./мес.): "))
+            c2 = float(input("  Мощность линии C2 (ед./мес.): "))
+            
+            print("\nСпрос охранных компаний:")
+            sec1 = float(input("  Спрос Sec1 (ед./мес.): "))
+            sec2 = float(input("  Спрос Sec2 (ед./мес.): "))
+            sec3 = float(input("  Спрос Sec3 (ед./мес.): "))
+            
+            print("\nСебестоимость и логистика (руб./ед.):")
+            print("  Для линии C1:")
+            c1_sec1 = float(input("    C1 -> Sec1: "))
+            c1_sec2 = float(input("    C1 -> Sec2: "))
+            c1_sec3 = float(input("    C1 -> Sec3: "))
+            print("  Для линии C2:")
+            c2_sec1 = float(input("    C2 -> Sec1: "))
+            c2_sec2 = float(input("    C2 -> Sec2: "))
+            c2_sec3 = float(input("    C2 -> Sec3: "))
+            
+            total_capacity = c1 + c2
+            total_demand = sec1 + sec2 + sec3
+            
+            if total_capacity < total_demand:
+                print(f"\n ВНИМАНИЕ: Задача НЕДОПУСТИМА!")
+                print(f"   Общая мощность: {total_capacity} ед./мес.")
+                print(f"   Общий спрос: {total_demand} ед./мес.")
+                print(f"   Спрос превышает мощность на {total_demand - total_capacity} ед./мес.")
+                print("\nДля решения задачи необходимо:")
+                print("   - Увеличить мощности производственных линий, ИЛИ")
+                print("   - Уменьшить спрос компаний")
+                return False
+            
+            if total_capacity > total_demand:
+                print(f"\n  ИНФОРМАЦИЯ: Избыток мощности")
+                print(f"   Общая мощность: {total_capacity} ед./мес.")
+                print(f"   Общий спрос: {total_demand} ед./мес.")
+                print(f"   Неиспользуемая мощность: {total_capacity - total_demand} ед./мес.")
+            
+            self.c = [c1_sec1, c1_sec2, c1_sec3, c2_sec1, c2_sec2, c2_sec3]
+            self.A_ub = [
+                [1, 1, 1, 0, 0, 0],
+                [0, 0, 0, 1, 1, 1]
+            ]
+            self.b_ub = [c1, c2]
+            self.A_eq = [
+                [1, 0, 0, 1, 0, 0],
+                [0, 1, 0, 0, 1, 0],
+                [0, 0, 1, 0, 0, 1]
+            ]
+            self.b_eq = [sec1, sec2, sec3]
+            
+            print("\n" + "="*60)
+            print("ПАРАМЕТРЫ ПРИНЯТЫ")
+            print("="*60)
+            print(f"Мощности: C1={c1}, C2={c2}")
+            print(f"Спрос: Sec1={sec1}, Sec2={sec2}, Sec3={sec3}")
+            print(f"Целевая функция: Z = {self.c[0]}x1 + {self.c[1]}x2 + {self.c[2]}x3 + {self.c[3]}x4 + {self.c[4]}x5 + {self.c[5]}x6")
+            return True
+            
+        except ValueError:
+            print("Ошибка: введите корректные числовые значения.")
+            return False
+    
+    def solve_optimization(self, method='highs'):
+        if self.c is None:
+            print("Сначала введите параметры задачи")
+            return
+            
+        print(f"\n>>> Запуск метода: {method}")
+        
+        start_time = time.time()
+        
+        res = linprog(c=self.c,
+                     A_ub=self.A_ub, b_ub=self.b_ub,
+                     A_eq=self.A_eq, b_eq=self.b_eq,
+                     bounds=self.bounds,
+                     method=method)
+        
+        end_time = time.time()
+        execution_time = end_time - start_time
+        
+        if res.success:
+            print(f"Статус решения: УСПЕХ ({res.message})")
+            print(f"Оптимальный план (x1...x6): {res.x}")
+            print(f"Минимальные затраты: {res.fun:.2f} руб.")
+            print(f"Время выполнения: {execution_time:.6f} сек.")
+        else:
+            print(f"Статус решения: ОШИБКА ({res.message})")
+        
+        return res
+    
+    def run_all_methods(self):
+        if self.c is None:
+            print("Сначала введите параметры задачи")
+            return
+            
+        for method in self.methods:
+            self.solve_optimization(method)
+            print()
+
+def optimization_menu():
+    optimizer = OptimizationModule()
+    
+    print("\n" + "="*60)
+    print("               МОДУЛЬ ОПТИМИЗАЦИИ ПРОЦЕССОВ")
+    print("="*60)
+
+    print("\nЗАДАЧА: Минимизация затрат на производство и доставку")
+    print("камер видеонаблюдения между производственными линиями")
+    print("и охранными компаниями")
+    
+    while True:
+        print("\nМЕНЮ ОПТИМИЗАЦИИ:")
+        print("1. Ввести параметры задачи")
+        print("2. Решить задачу всеми методами")
+        print("3. Решить методом HiGHS (рекомендуется)")
+        print("4. Решить методом Interior-Point")
+        print("5. Решить методом Revised Simplex")
+        print("0. Вернуться в главное меню")
+        
+        choice = input("\nВыберите пункт (0-5): ").strip()
+        
+        if choice == '1':
+            optimizer.input_parameters()
+        elif choice == '2':
+            optimizer.run_all_methods()
+        elif choice == '3':
+            optimizer.solve_optimization('highs')
+        elif choice == '4':
+            optimizer.solve_optimization('interior-point')
+        elif choice == '5':
+            optimizer.solve_optimization('revised simplex')
         elif choice == '0':
             break
         else:
@@ -787,7 +882,6 @@ def forecast_menu(samples, calculator):
 
 def main_menu():
     print("\n" + "="*70)
-    print("ПРОГРАММА ОЦЕНКИ ТЕХНИЧЕСКОГО УРОВНЯ ПРОДУКЦИИ")
     print("Производитель систем видеонаблюдения")
     print("="*70)
     
@@ -807,10 +901,11 @@ def main_menu():
         print("6. Показать столбчатую диаграмму")
         print("7. Сохранить данные")
         print("8. Прогнозирование динамики показателей")
+        print("9. Оптимизация процессов")
         print("0. Выход")
         print("-"*70)
         
-        choice = input("Выберите пункт меню (0-8): ").strip()
+        choice = input("Выберите пункт меню (0-9): ").strip()
         
         if choice == '1':
             samples = add_sample(samples, calculator)
@@ -823,7 +918,7 @@ def main_menu():
                 print("\nПересчет технического уровня...")
                 for sample in samples:
                     calculator.calculate_technical_level(sample)
-                print("✓ Расчет завершен!")
+                print(" Расчет завершен!")
                 show_all_samples(samples)
             else:
                 print("Нет образцов для расчета")
@@ -839,12 +934,19 @@ def main_menu():
                 print("Нет образцов для отображения")
         elif choice == '7':
             if samples:
-                data_manager.save_to_json(samples)
-                data_manager.save_to_csv(samples)
+                filename = input("Введите имя файла для сохранения (например, data.json или data.csv): ").strip()
+                if filename.lower().endswith('.json'):
+                    data_manager.save_to_json(samples, filename)
+                elif filename.lower().endswith('.csv'):
+                    data_manager.save_to_csv(samples, filename)
+                else:
+                    print("Ошибка: Некорректное расширение. Используйте .json или .csv.")
             else:
                 print("Нет данных для сохранения")
         elif choice == '8':
             forecast_menu(samples, calculator)
+        elif choice == '9':
+            optimization_menu()
         elif choice == '0':
             print("\nСпасибо за работу!")
             break
@@ -853,4 +955,3 @@ def main_menu():
 
 if __name__ == "__main__":
     main_menu()
-
