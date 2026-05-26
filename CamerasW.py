@@ -1,4 +1,4 @@
-#Начало
+# Начало
 import json
 import csv
 import os
@@ -7,7 +7,7 @@ from datetime import datetime
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from scipy.optimize import linprog
 import time
 
@@ -499,7 +499,6 @@ class ForecastModule:
         self.model = None
         self.model_type = ''
         self.best_feature = ''
-        self.selected_feature = None
         
     def load_cctv_data(self, filename='cctv.csv'):
         try:
@@ -524,26 +523,20 @@ class ForecastModule:
             return
             
         print("\n" + "="*60)
-        print("ВЫБОР ТИПА МОДЕЛИ")
-        print("="*60)
-        print("1. Линейная регрессия")
-        print("2. Полиномиальная регрессия (степень 2)")
-
-        model_choice = input("Выберите тип модели (1-2): ").strip()
-
-        if model_choice not in ['1', '2']:
-            print("Неверный выбор")
-            return
-            
-        print("\n" + "="*60)
-        print("ВЫБОР ПРИЗНАКА ДЛЯ ПРОГНОЗА")
+        print("АНАЛИЗ КОРРЕЛЯЦИЙ И ВЫБОР ПРИЗНАКА")
         print("="*60)
 
+        correlations = {}
+        for col in self.X.columns:
+            corr = self.X[col].corr(self.y)
+            correlations[col] = abs(corr)
+            print(f"{col}: {corr:.4f}")
+        
+        print("\n" + "-"*60)
         features_list = list(self.X.columns)
         for i, col in enumerate(features_list, 1):
-            corr = abs(self.X[col].corr(self.y))
-            print(f"{i}. {col} (корреляция: {corr:.3f})")
-
+            print(f"{i}. {col}")
+        
         while True:
             try:
                 feat_choice = int(input(f"\nВыберите признак (1-{len(features_list)}): "))
@@ -553,36 +546,72 @@ class ForecastModule:
                 print("Неверный номер. Попробуйте снова.")
             except ValueError:
                 print("Ошибка: введите число.")
-
-        print(f"\n Выбран признак: {self.best_feature}")
-
+        
+        print(f"\n✓ Выбран признак: {self.best_feature}")
+        
         X_single = self.X[[self.best_feature]].values
         y = self.y.values
-
+        
         lin_reg = LinearRegression()
         lin_reg.fit(X_single, y)
         y_pred_lin = lin_reg.predict(X_single)
-        r2_lin = r2_score(y, y_pred_lin)
-
+        
         poly = PolynomialFeatures(degree=2)
         X_poly = poly.fit_transform(X_single)
         poly_reg = LinearRegression()
         poly_reg.fit(X_poly, y)
         y_pred_poly = poly_reg.predict(X_poly)
+        
+        r2_lin = r2_score(y, y_pred_lin)
+        mse_lin = mean_squared_error(y, y_pred_lin)
+        mae_lin = mean_absolute_error(y, y_pred_lin)
+        rmse_lin = np.sqrt(mse_lin)
+        
         r2_poly = r2_score(y, y_pred_poly)
-
-        print(f"\nЛинейная регрессия: R² = {r2_lin:.4f}")
-        print(f"Полиномиальная (ст. 2): R² = {r2_poly:.4f}")
-
-        if model_choice == '2':
-            self.model = ('poly', poly_reg, poly)
+        mse_poly = mean_squared_error(y, y_pred_poly)
+        mae_poly = mean_absolute_error(y, y_pred_poly)
+        rmse_poly = np.sqrt(mse_poly)
+        
+        print("\n" + "="*60)
+        print("МЕТРИКИ КАЧЕСТВА МОДЕЛЕЙ")
+        print("="*60)
+        print(f"\nЛинейная регрессия:")
+        print(f"  R² = {r2_lin:.4f}")
+        print(f"  MSE = {mse_lin:.2f}")
+        print(f"  MAE = {mae_lin:.2f}")
+        print(f"  RMSE = {rmse_lin:.2f}")
+        print(f"\nПолиномиальная регрессия (степень 2):")
+        print(f"  R² = {r2_poly:.4f}")
+        print(f"  MSE = {mse_poly:.2f}")
+        print(f"  MAE = {mae_poly:.2f}")
+        print(f"  RMSE = {rmse_poly:.2f}")
+        
+        print("\n" + "-"*60)
+        print("АВТОМАТИЧЕСКИЙ ВЫБОР МОДЕЛИ")
+        print("-"*60)
+        
+        r2_improvement = r2_poly - r2_lin
+        if r2_improvement > 0.05 and mse_poly < mse_lin and mae_poly < mae_lin:
+            self.model = ('poly', poly_reg, poly, self.best_feature)
             self.model_type = 'poly'
-            print("Выбрана ПОЛИНОМИАЛЬНАЯ модель (по выбору пользователя)")
-        else:
-            self.model = ('linear', lin_reg, None)
-            self.model_type = 'linear'
-            print("Выбрана ЛИНЕЙНАЯ модель (по выбору пользователя)")
+            print(f"✓ Выбрана ПОЛИНОМИАЛЬНАЯ модель")
+            print(f"  Прирост R²: +{r2_improvement:.4f}")
+            print(f"  Уравнение: y = a·x² + b·x + c")
             
+            coef = poly_reg.coef_
+            a = coef[2] if len(coef) > 2 else 0
+            b = coef[1] if len(coef) > 1 else 0
+            c = poly_reg.intercept_
+            print(f"  Коэффициенты: a={a:.4f}, b={b:.4f}, c={c:.4f}")
+        else:
+            self.model = ('linear', lin_reg, None, self.best_feature)
+            self.model_type = 'linear'
+            print(f"✓ Выбрана ЛИНЕЙНАЯ модель")
+            print(f"  Уравнение: y = k·x + b")
+            k = lin_reg.coef_[0]
+            b = lin_reg.intercept_
+            print(f"  Коэффициенты: k={k:.4f}, b={b:.4f}")
+        
         if HAS_MATPLOTLIB:
             fig, ax = plt.subplots(figsize=(10, 6))
             ax.scatter(X_single, y, color='blue', alpha=0.6, label='Реальные данные')
@@ -602,7 +631,7 @@ class ForecastModule:
             ax.legend()
             ax.grid(True, alpha=0.3)
             plt.savefig('sales_forecast.png', dpi=300, bbox_inches='tight')
-            print("График сохранен в sales_forecast.png")
+            print(f"\n✓ График сохранен в sales_forecast.png")
             plt.show()
         
         return True
@@ -709,7 +738,7 @@ def forecast_menu(samples, calculator):
     
     while True:
         print("\nМЕНЮ ПРОГНОЗИРОВАНИЯ:")
-        print("1. Выбрать модель и признак")
+        print("1. Выбрать признак и построить модель (автоматически)")
         print("2. Прогноз для конкретного значения")
         print("3. Прогноз на интервале значений")
         print("0. Вернуться в главное меню")
