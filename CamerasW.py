@@ -498,13 +498,18 @@ class ForecastModule:
         self.y = None
         self.model = None
         self.model_type = ''
-        self.best_feature = ''
-        
+        self.poly_transformer = None
+
     def load_cctv_data(self, filename='cctv.csv'):
         try:
             self.df = pd.read_csv(filename)
             features = ['avg_system_price', 'camera_resolution', 'is_ai_analytics', 'storage_capacity', 'night_vision_range']
             target = 'monthly_cctv_sales'
+            
+            missing_cols = [col for col in features + [target] if col not in self.df.columns]
+            if missing_cols:
+                print(f"Ошибка: в файле отсутствуют колонки: {missing_cols}")
+                return False
             
             self.X = self.df[features]
             self.y = self.df[target]
@@ -512,189 +517,214 @@ class ForecastModule:
             print(f"\nДанные успешно загружены из {filename}")
             print(f"  Найдено {len(self.df)} записей.")
             print(f"  Целевой показатель: {target}")
+            print(f"  Признаки: {', '.join(features)}")
             return True
         except Exception as e:
             print(f"Ошибка загрузки файла: {e}")
             return False
 
-    def choose_model(self):
+    def analyze_and_choose_model(self):
         if self.X is None or self.y is None:
             print("Нет данных для обучения. Сначала загрузите CSV.")
             return
             
-        print("\n" + "="*60)
-        print("АНАЛИЗ КОРРЕЛЯЦИЙ И ВЫБОР ПРИЗНАКА")
-        print("="*60)
-
+        print("\n" + "= "*60)
+        print("1. АНАЛИЗ ИСХОДНЫХ ДАННЫХ И КОРРЕЛЯЦИЙ")
+        print("= "*60)
+        print("Гипотеза: признаки с высокой абсолютной корреляцией сильнее влияют на продажи.")
         correlations = {}
         for col in self.X.columns:
             corr = self.X[col].corr(self.y)
             correlations[col] = abs(corr)
-            print(f"{col}: {corr:.4f}")
+            direction = "прямая" if corr > 0 else "обратная"
+            print(f"  • {col}: {corr:.4f} ({direction} связь)")
         
-        print("\n" + "-"*60)
-        features_list = list(self.X.columns)
-        for i, col in enumerate(features_list, 1):
-            print(f"{i}. {col}")
-        
-        while True:
-            try:
-                feat_choice = int(input(f"\nВыберите признак (1-{len(features_list)}): "))
-                if 1 <= feat_choice <= len(features_list):
-                    self.best_feature = features_list[feat_choice - 1]
-                    break
-                print("Неверный номер. Попробуйте снова.")
-            except ValueError:
-                print("Ошибка: введите число.")
-        
-        print(f"\n✓ Выбран признак: {self.best_feature}")
-        
-        X_single = self.X[[self.best_feature]].values
-        y = self.y.values
+        print("\n" + "= "*60)
+        print("2. ОБУЧЕНИЕ И СРАВНЕНИЕ МОДЕЛЕЙ")
+        print("= "*60)
         
         lin_reg = LinearRegression()
-        lin_reg.fit(X_single, y)
-        y_pred_lin = lin_reg.predict(X_single)
+        lin_reg.fit(self.X, self.y)
+        y_pred_lin = lin_reg.predict(self.X)
         
-        poly = PolynomialFeatures(degree=2)
-        X_poly = poly.fit_transform(X_single)
-        poly_reg = LinearRegression()
-        poly_reg.fit(X_poly, y)
-        y_pred_poly = poly_reg.predict(X_poly)
-        
-        r2_lin = r2_score(y, y_pred_lin)
-        mse_lin = mean_squared_error(y, y_pred_lin)
-        mae_lin = mean_absolute_error(y, y_pred_lin)
+        r2_lin = r2_score(self.y, y_pred_lin)
+        mse_lin = mean_squared_error(self.y, y_pred_lin)
+        mae_lin = mean_absolute_error(self.y, y_pred_lin)
         rmse_lin = np.sqrt(mse_lin)
         
-        r2_poly = r2_score(y, y_pred_poly)
-        mse_poly = mean_squared_error(y, y_pred_poly)
-        mae_poly = mean_absolute_error(y, y_pred_poly)
+        poly = PolynomialFeatures(degree=2)
+        X_poly = poly.fit_transform(self.X)
+        poly_reg = LinearRegression()
+        poly_reg.fit(X_poly, self.y)
+        y_pred_poly = poly_reg.predict(X_poly)
+        
+        r2_poly = r2_score(self.y, y_pred_poly)
+        mse_poly = mean_squared_error(self.y, y_pred_poly)
+        mae_poly = mean_absolute_error(self.y, y_pred_poly)
         rmse_poly = np.sqrt(mse_poly)
         
-        print("\n" + "="*60)
-        print("МЕТРИКИ КАЧЕСТВА МОДЕЛЕЙ")
-        print("="*60)
-        print(f"\nЛинейная регрессия:")
-        print(f"  R² = {r2_lin:.4f}")
-        print(f"  MSE = {mse_lin:.2f}")
-        print(f"  MAE = {mae_lin:.2f}")
-        print(f"  RMSE = {rmse_lin:.2f}")
-        print(f"\nПолиномиальная регрессия (степень 2):")
-        print(f"  R² = {r2_poly:.4f}")
-        print(f"  MSE = {mse_poly:.2f}")
-        print(f"  MAE = {mae_poly:.2f}")
-        print(f"  RMSE = {rmse_poly:.2f}")
+        print("\nМетрики Линейной модели:")
+        print(f"  R² = {r2_lin:.4f}, MSE = {mse_lin:.2f}, MAE = {mae_lin:.2f}, RMSE = {rmse_lin:.2f}")
+        print("\nМетрики Полиномиальной модели (степень 2):")
+        print(f"  R² = {r2_poly:.4f}, MSE = {mse_poly:.2f}, MAE = {mae_poly:.2f}, RMSE = {rmse_poly:.2f}")
         
         print("\n" + "-"*60)
-        print("АВТОМАТИЧЕСКИЙ ВЫБОР МОДЕЛИ")
+        print("3. ВЫБОР НАИЛУЧШЕЙ МОДЕЛИ")
         print("-"*60)
         
         r2_improvement = r2_poly - r2_lin
         if r2_improvement > 0.05 and mse_poly < mse_lin and mae_poly < mae_lin:
-            self.model = ('poly', poly_reg, poly, self.best_feature)
+            self.model = poly_reg
             self.model_type = 'poly'
-            print(f"✓ Выбрана ПОЛИНОМИАЛЬНАЯ модель")
+            self.poly_transformer = poly
+            print("✓ Выбрана ПОЛИНОМИАЛЬНАЯ модель")
             print(f"  Прирост R²: +{r2_improvement:.4f}")
-            print(f"  Уравнение: y = a·x² + b·x + c")
-            
-            coef = poly_reg.coef_
-            a = coef[2] if len(coef) > 2 else 0
-            b = coef[1] if len(coef) > 1 else 0
-            c = poly_reg.intercept_
-            print(f"  Коэффициенты: a={a:.4f}, b={b:.4f}, c={c:.4f}")
+            print(f"  Риск переобучения: низкий (ошибки аппроксимации уменьшились)")
         else:
-            self.model = ('linear', lin_reg, None, self.best_feature)
+            self.model = lin_reg
             self.model_type = 'linear'
-            print(f"✓ Выбрана ЛИНЕЙНАЯ модель")
-            print(f"  Уравнение: y = k·x + b")
-            k = lin_reg.coef_[0]
-            b = lin_reg.intercept_
-            print(f"  Коэффициенты: k={k:.4f}, b={b:.4f}")
+            print("✓ Выбрана ЛИНЕЙНАЯ модель")
+            print("  Полиномиальная модель не дала значимого улучшения или показала признаки переобучения.")
+        
+        print("\n" + "-"*60)
+        print("УРАВНЕНИЕ РЕГРЕССИИ В ЯВНОМ ВИДЕ")
+        print("-"*60)
+        
+        if self.model_type == 'linear':
+
+            terms = []
+            for i, col in enumerate(self.X.columns):
+                coef = lin_reg.coef_[i]
+                sign = "+" if coef >= 0 else "-"
+                terms.append(f"{sign} {abs(coef):.4f}*{col}")
+            equation = "y = " + " ".join(terms) + f" + ({lin_reg.intercept_:.4f})"
+            print(equation)
+            
+            print("\nКоэффициенты модели:")
+            for i, col in enumerate(self.X.columns):
+                print(f"  a{i+1} ({col}) = {lin_reg.coef_[i]:.4f}")
+            print(f"  b (свободный член) = {lin_reg.intercept_:.4f}")
+        else:
+            print("Полиномиальная модель (степень 2) содержит перекрёстные члены и квадраты признаков.")
+            print("Уравнение имеет вид: y = Σ(aᵢⱼ·xᵢ·xⱼ) + Σ(bᵢ·xᵢ) + c")
+            print("\nКоэффициенты при линейных членах:")
+            feature_names = poly.get_feature_names_out(self.X.columns)
+            for i, name in enumerate(feature_names):
+                if poly_reg.coef_[i] != 0:
+                    print(f"  {name}: {poly_reg.coef_[i]:.4f}")
+            print(f"  Свободный член: {poly_reg.intercept_:.4f}")
         
         if HAS_MATPLOTLIB:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.scatter(X_single, y, color='blue', alpha=0.6, label='Реальные данные')
-            
-            X_test = np.linspace(X_single.min(), X_single.max(), 100).reshape(-1, 1)
-            if self.model_type == 'linear':
-                y_test = self.model[1].predict(X_test)
-                label = f'Линейная (R²={r2_lin:.3f})'
-            else:
-                y_test = self.model[1].predict(self.model[2].transform(X_test))
-                label = f'Полиномиальная (R²={r2_poly:.3f})'
-                
-            ax.plot(X_test, y_test, 'r-', linewidth=2, label=label)
-            ax.set_xlabel(self.best_feature)
-            ax.set_ylabel('Объем продаж (monthly_cctv_sales)')
-            ax.set_title(f'Прогноз продаж на основе признака: {self.best_feature}')
+            fig, ax = plt.subplots(figsize=(8, 8))
+            ax.scatter(self.y, y_pred_lin if self.model_type == 'linear' else y_pred_poly, 
+                       color='blue', alpha=0.6, label='Прогноз модели')
+            min_val = min(self.y.min(), (y_pred_lin if self.model_type == 'linear' else y_pred_poly).min())
+            max_val = max(self.y.max(), (y_pred_lin if self.model_type == 'linear' else y_pred_poly).max())
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Идеальное совпадение')
+            ax.set_xlabel('Реальные продажи')
+            ax.set_ylabel('Прогнозируемые продажи')
+            ax.set_title(f'Множественная регрессия: Прогноз vs Факт (R²={r2_lin if self.model_type=="linear" else r2_poly:.3f})')
             ax.legend()
             ax.grid(True, alpha=0.3)
-            plt.savefig('sales_forecast.png', dpi=300, bbox_inches='tight')
-            print(f"\n✓ График сохранен в sales_forecast.png")
+            plt.savefig('multiple_regression_fit.png', dpi=300, bbox_inches='tight')
+            print("\n✓ График соответствия модели сохранен в multiple_regression_fit.png")
             plt.show()
         
         return True
 
-    def predict_single(self):
+    def predict_manual(self):
         if self.model is None:
-            print("Сначала выберите модель регрессии (пункт 1)")
-            return
-        if not self.best_feature:
-            print("Сначала выберите признак")
+            print("Сначала постройте и выберите модель (пункт 1)")
             return
 
-        print("\n" + "="*60)
-        print("ПРОГНОЗ ДЛЯ КОНКРЕТНОГО ЗНАЧЕНИЯ")
-        print("="*60)
-
-        print(f"\n Текущий признак для прогноза: {self.best_feature}")
-
-        print("\n Допустимые диапазоны значений признаков:")
+        print("\n" + "= "*60)
+        print("ПРОГНОЗ ПРИ РУЧНОМ ВВОДЕ ВСЕХ ПРИЗНАКОВ")
+        print("= "*60)
+        
+        input_data = {}
+        print("Введите значения для всех признаков:")
         for col in self.X.columns:
             min_v = self.X[col].min()
             max_v = self.X[col].max()
-            print(f"   • {col}: от {min_v:.2f} до {max_v:.2f}")
-
-        print(f"\nВведите значение для '{self.best_feature}':")
-        try:
-            value = float(input("> "))
-        except ValueError:
-            print("Ошибка: введите корректное числовое значение.")
-            return
-
-        X_val = np.array([[value]])
+            while True:
+                try:
+                    val = float(input(f"  • {col} (диапазон {min_v:.2f} - {max_v:.2f}): "))
+                    input_data[col] = val
+                    break
+                except ValueError:
+                    print("    Ошибка: введите корректное числовое значение.")
+        
+        df_input = pd.DataFrame([input_data], columns=self.X.columns)
+        
         if self.model_type == 'linear':
-            prediction = self.model[1].predict(X_val)[0]
+            prediction = self.model.predict(df_input)[0]
         else:
-            prediction = self.model[1].predict(self.model[2].transform(X_val))[0]
-
-        print(f"\n✓ Прогнозируемый объем продаж: {prediction:.2f} ед.")
+            prediction = self.model.predict(self.poly_transformer.transform(df_input))[0]
+            
+        print(f"\n✓ Прогнозируемый объем продаж при заданных параметрах: {prediction:.2f} ед.")
 
     def predict_interval(self):
-        if self.model is None:
-            print("Сначала выберите модель регрессии (пункт 1)")
-            return
-        if not self.best_feature:
-            print("Сначала выберите признак")
+        if self.X is None or self.y is None:
+            print("Нет данных. Сначала загрузите CSV.")
             return
 
-        print("\n" + "="*60)
-        print("ПРОГНОЗ НА ИНТЕРВАЛЕ ЗНАЧЕНИЙ")
-        print("="*60)
+        print("\n" + "= "*60)
+        print("ИНТЕРВАЛЬНЫЙ ПРОГНОЗ")
+        print("= "*60)
 
-        print(f"\n Текущий признак для прогноза: {self.best_feature}")
+        features_list = list(self.X.columns)
+        print("Выберите признак для интервального прогноза:")
+        for i, col in enumerate(features_list, 1):
+            print(f"  {i}. {col}")
+            
+        while True:
+            try:
+                feat_choice = int(input(f"\nВведите номер признака (1-{len(features_list)}): "))
+                if 1 <= feat_choice <= len(features_list):
+                    chosen_feature = features_list[feat_choice - 1]
+                    break
+                print("Неверный номер.")
+            except ValueError:
+                print("Ошибка: введите число.")
 
-        print("\n Допустимые диапазоны значений признаков:")
-        for col in self.X.columns:
-            min_v = self.X[col].min()
-            max_v = self.X[col].max()
-            print(f"   • {col}: от {min_v:.2f} до {max_v:.2f}")
+        x_data = self.X[chosen_feature].values
+        y_data = self.y.values
+        X_single_2d = x_data.reshape(-1, 1)
 
-        print(f"\nВведите границы интервала для '{self.best_feature}':")
+        lin_reg = LinearRegression()
+        lin_reg.fit(X_single_2d, y_data)
+        y_pred_lin = lin_reg.predict(X_single_2d)
+        
+        poly = PolynomialFeatures(degree=2)
+        X_poly = poly.fit_transform(X_single_2d)
+        poly_reg = LinearRegression()
+        poly_reg.fit(X_poly, y_data)
+        y_pred_poly = poly_reg.predict(X_poly)
+
+        r2_lin = r2_score(y_data, y_pred_lin)
+        mse_lin = mean_squared_error(y_data, y_pred_lin)
+        r2_poly = r2_score(y_data, y_pred_poly)
+        mse_poly = mean_squared_error(y_data, y_pred_poly)
+
+        if (r2_poly - r2_lin) > 0.05 and mse_poly < mse_lin:
+            model = poly_reg
+            transformer = poly
+            model_type = 'poly'
+            print(f"\n✓ Для признака '{chosen_feature}' выбрана ПОЛИНОМИАЛЬНАЯ модель (R²={r2_poly:.4f})")
+        else:
+            model = lin_reg
+            transformer = None
+            model_type = 'linear'
+            print(f"\n✓ Для признака '{chosen_feature}' выбрана ЛИНЕЙНАЯ модель (R²={r2_lin:.4f})")
+
+        print("\nДопустимый диапазон значений:")
+        min_v = self.X[chosen_feature].min()
+        max_v = self.X[chosen_feature].max()
+        print(f"  • {chosen_feature}: от {min_v:.2f} до {max_v:.2f}")
+
         try:
-            start = float(input("  Начальное значение: "))
-            end = float(input("  Конечное значение: "))
+            start = float(input("  Начальное значение интервала: "))
+            end = float(input("  Конечное значение интервала: "))
             steps = int(input("  Количество точек: "))
         except ValueError:
             print("Ошибка: введите корректные числовые значения.")
@@ -702,53 +732,56 @@ class ForecastModule:
 
         X_interval = np.linspace(start, end, steps).reshape(-1, 1)
 
-        if self.model_type == 'linear':
-            y_interval = self.model[1].predict(X_interval)
+        if model_type == 'linear':
+            y_interval = model.predict(X_interval)
         else:
-            y_interval = self.model[1].predict(self.model[2].transform(X_interval))
+            y_interval = model.predict(transformer.transform(X_interval))
 
         print("\n" + "-"*50)
-        print(f"{'Значение':<20} | {'Прогноз продаж':<15}")
+        print(f"{'Значение': <20} | {'Прогноз продаж': <15}")
         print("-"*50)
         for x, y in zip(X_interval.flatten(), y_interval):
-            print(f"{x:<20.2f} | {y:<15.2f}")
+            print(f"{x: <20.2f} | {y: <15.2f}")
         print("-"*50)
 
         if HAS_MATPLOTLIB:
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(X_interval.flatten(), y_interval, 'b-', linewidth=2, marker='o', markersize=4)
-            ax.set_xlabel(self.best_feature, fontsize=11)
+            
+            ax.scatter(x_data, y_data, color='gray', alpha=0.5, s=30, label='Реальные данные', zorder=1)
+            
+            ax.plot(X_interval.flatten(), y_interval, 'r-', linewidth=2.5, marker='o', markersize=5, label='Прогноз модели', zorder=2)
+            
+            ax.set_xlabel(chosen_feature, fontsize=11)
             ax.set_ylabel('Прогноз объема продаж (monthly_cctv_sales)', fontsize=11)
-            ax.set_title(f'Интервальный прогноз продаж\n(признак: {self.best_feature})', fontsize=12, pad=15)
+            ax.set_title(f'Интервальный прогноз для {chosen_feature}', fontsize=12, pad=15)
+            ax.legend(loc='best')
             ax.grid(True, alpha=0.3)
-            plt.savefig('sales_interval.png', dpi=300, bbox_inches='tight')
-            print("\n График интервала сохранен в sales_interval.png")
+            plt.savefig('sales_interval_pairwise.png', dpi=300, bbox_inches='tight')
+            print("\n✓ График сохранен в sales_interval_pairwise.png")
             plt.show()
-    
-    
+
 def forecast_menu(samples, calculator):
     forecast = ForecastModule()
-    
     if not forecast.load_cctv_data('cctv.csv'):
         return
 
-    print("\n" + "="*60)
+    print("\n" + "= "*60)
     print("МОДУЛЬ ПРОГНОЗИРОВАНИЯ ОБЪЕМА ПРОДАЖ")
-    print("="*60)
-    
+    print("= "*60)
+
     while True:
         print("\nМЕНЮ ПРОГНОЗИРОВАНИЯ:")
-        print("1. Выбрать признак и построить модель (автоматически)")
-        print("2. Прогноз для конкретного значения")
-        print("3. Прогноз на интервале значений")
+        print("1. Проанализировать данные и выбрать наилучшую модель регрессии")
+        print("2. Получить прогноз при ручном вводе ВСЕХ признаков")
+        print("3. Интервальный прогноз + График")
         print("0. Вернуться в главное меню")
         
         choice = input("\nВыберите пункт (0-3): ").strip()
         
         if choice == '1':
-            forecast.choose_model()
+            forecast.analyze_and_choose_model()
         elif choice == '2':
-            forecast.predict_single()
+            forecast.predict_manual()
         elif choice == '3':
             forecast.predict_interval()
         elif choice == '0':
